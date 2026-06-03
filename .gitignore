@@ -1,0 +1,8 @@
+/target
+/vmlinux
+/vmlinuz
+/extract-vmlinux
+/initramfs.cpio.gz
+/ferrvm-initramfs-build
+/local
+/.DS_Store

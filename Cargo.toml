@@ -1,0 +1,28 @@
+[package]
+name = "ferrvm"
+version = "0.1.0"
+edition = "2024"
+authors = ["Anastasios Papagiannis <tasos.papagiannnis@gmail.com>"]
+description = "A toy VMM written in Rust for learning purposes."
+license = "MIT OR Apache-2.0"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "warn"
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+use_self = "allow"
+struct_field_names = "allow"
+
+[dependencies]
+bitflags = "2.11.1"
+clap = { version = "4.6.1", features = ["derive"] }
+iced-x86 = "1.21.0"
+libc = "0.2"
+thiserror = "2.0.18"
+
+[[bin]]
+name = "ferrvm"
+path = "src/main.rs"
