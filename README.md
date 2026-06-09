@@ -106,6 +106,10 @@ A qemu-style Ctrl-A prefix is reserved for VMM control:
 | `Ctrl-A Ctrl-A`| send a literal `Ctrl-A` to the guest |
 | `Ctrl-A ?`     | print the help menu                  |
 
+## Virtio
+
+ferrvm provides a **virtio-rng** entropy device over the virtio-mmio transport.
+
 ## License
 
 Licensed under either of:
