@@ -19,6 +19,10 @@ pub struct Config {
     #[arg(long)]
     pub cmdline: Option<String>,
 
+    /// Path to a raw disk image to attach as a virtio-blk device (optional)
+    #[arg(long)]
+    pub disk: Option<String>,
+
     /// Enable debug mode
     #[arg(long)]
     pub debug: bool,
