@@ -6,10 +6,14 @@ use std::os::unix::fs::FileExt;
 
 const VIRTIO_BLK_T_IN: u32 = 0;
 const VIRTIO_BLK_T_OUT: u32 = 1;
+const VIRTIO_BLK_T_FLUSH: u32 = 4;
 
 const VIRTIO_BLK_S_OK: u8 = 0;
 const VIRTIO_BLK_S_IOERR: u8 = 1;
 const VIRTIO_BLK_S_UNSUPP: u8 = 2;
+
+// Feature bit: device supports the flush (cache) command.
+const VIRTIO_BLK_F_FLUSH: u64 = 1 << 9;
 
 const SECTOR_SIZE: u64 = 512;
 
@@ -44,6 +48,16 @@ impl VirtioBlk {
         mem: &GuestMemory,
         written: &mut u32,
     ) -> u8 {
+        if req_type == VIRTIO_BLK_T_FLUSH {
+            if self.debug {
+                printcrln!("Flush");
+            }
+            return match self.disk.sync_all() {
+                Ok(()) => VIRTIO_BLK_S_OK,
+                Err(_) => VIRTIO_BLK_S_IOERR,
+            };
+        }
+
         let mut offset = sector * SECTOR_SIZE;
 
         for desc in data {
@@ -112,7 +126,7 @@ impl VirtioDevice for VirtioBlk {
     }
 
     fn device_features(&self) -> u64 {
-        super::VIRTIO_F_VERSION_1
+        super::VIRTIO_F_VERSION_1 | VIRTIO_BLK_F_FLUSH
     }
 
     fn num_queues(&self) -> usize {
