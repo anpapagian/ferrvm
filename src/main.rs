@@ -11,6 +11,7 @@ mod elf;
 mod hypervisor;
 mod input;
 mod memory;
+mod pci;
 mod serial;
 mod stats;
 mod terminal;
@@ -42,7 +43,7 @@ pub const GSI_COM1: u32 = 4;
 /// needed but it seems that Linux as a guest handles that correctly.
 /// Next step is to implement virtio-pci and this will remove all
 /// `virtio_mmio.device` references from the command line.
-pub const DEFAULT_CMDLINE: &str = "console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 noapic reboot=t panic=1 oops=panic pci=off nomodule rdinit=/sbin/init virtio_mmio.device=512@0xd0000000:12 virtio_mmio.device=512@0xd0000200:14";
+pub const DEFAULT_CMDLINE: &str = "console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 noapic reboot=t panic=1 oops=panic nomodule rdinit=/sbin/init virtio_mmio.device=512@0xd0000000:12 virtio_mmio.device=512@0xd0000200:14";
 
 struct NullDevice;
 impl BusDevice for NullDevice {
@@ -169,6 +170,12 @@ fn main() -> Result<(), String> {
 
     let pio_bus = Bus::new();
     let mmio_bus = Bus::new();
+
+    let mut pci_root = crate::pci::PciRootBus::new();
+    pci_root.add_device(0, 0, Arc::new(Mutex::new(crate::pci::host_bridge())));
+    pio_bus
+        .register(0xcf8, 8, Arc::new(Mutex::new(pci_root)))
+        .map_err(|e| format!("Failed to register PCI config ports: {e}"))?;
 
     // Register Virtio MMIO RNG device
     let virtio_rng_gsi = 12;
