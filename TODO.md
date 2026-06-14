@@ -1,7 +1,7 @@
 # TODO
 
 Next steps:
-- [ ] Add support for virtio-block.
+- [x] Add support for virtio-block.
 - [ ] Add support for virtio-net.
 - [ ] Emulate MSR in bhyve and handle rdmsr/wrmsr exits.
 - [ ] Add support for multiple CPUs in the guest.
