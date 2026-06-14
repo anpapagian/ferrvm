@@ -7,6 +7,7 @@ use std::os::unix::fs::FileExt;
 const VIRTIO_BLK_T_IN: u32 = 0;
 const VIRTIO_BLK_T_OUT: u32 = 1;
 const VIRTIO_BLK_T_FLUSH: u32 = 4;
+const VIRTIO_BLK_T_GET_ID: u32 = 8;
 
 const VIRTIO_BLK_S_OK: u8 = 0;
 const VIRTIO_BLK_S_IOERR: u8 = 1;
@@ -17,14 +18,18 @@ const VIRTIO_BLK_F_FLUSH: u64 = 1 << 9;
 
 const SECTOR_SIZE: u64 = 512;
 
+const VIRTIO_BLK_ID_BYTES: usize = 20;
+const VIRTIO_BLK_ID_PREFIX: &str = "ferrvm-blk";
+
 pub struct VirtioBlk {
+    id: u32,
     disk: File,
     capacity_sectors: u64,
     debug: bool,
 }
 
 impl VirtioBlk {
-    pub fn new(path: &str, debug: bool) -> std::io::Result<Self> {
+    pub fn new(id: u32, path: &str, debug: bool) -> std::io::Result<Self> {
         // We should consider using O_DIRECT to avoid double caching
         // both in the host and in guest. This requires proper alignment.
         // We also need to check that does illumos support for direct I/O.
@@ -34,6 +39,7 @@ impl VirtioBlk {
             .open(path)?;
         let capacity_sectors = disk.metadata()?.len() / SECTOR_SIZE;
         Ok(Self {
+            id,
             disk,
             capacity_sectors,
             debug,
@@ -50,12 +56,33 @@ impl VirtioBlk {
     ) -> u8 {
         if req_type == VIRTIO_BLK_T_FLUSH {
             if self.debug {
-                printcrln!("Flush");
+                printcrln!("[blk{}] Flush", self.id);
             }
             return match self.disk.sync_all() {
                 Ok(()) => VIRTIO_BLK_S_OK,
                 Err(_) => VIRTIO_BLK_S_IOERR,
             };
+        }
+
+        if req_type == VIRTIO_BLK_T_GET_ID {
+            if self.debug {
+                printcrln!("[blk{}] Get ID", self.id);
+            }
+            let Some(desc) = data.first() else {
+                return VIRTIO_BLK_S_IOERR;
+            };
+            // The buffer is VIRTIO_BLK_ID_BYTES long; write the ID and
+            // zero-pad the rest.
+            let id = format!("{VIRTIO_BLK_ID_PREFIX}{}", self.id);
+            let len = (desc.len as usize).min(VIRTIO_BLK_ID_BYTES);
+            let mut buf = vec![0u8; len];
+            let n = id.len().min(len);
+            buf[..n].copy_from_slice(&id.as_bytes()[..n]);
+            if mem.write_at(desc.addr, &buf).is_err() {
+                return VIRTIO_BLK_S_IOERR;
+            }
+            *written += len as u32;
+            return VIRTIO_BLK_S_OK;
         }
 
         let mut offset = sector * SECTOR_SIZE;
@@ -66,7 +93,12 @@ impl VirtioBlk {
                 VIRTIO_BLK_T_IN => {
                     let mut buf = vec![0u8; desc.len as usize];
                     if self.debug {
-                        printcrln!("Read at offset {}, len {}", offset, desc.len);
+                        printcrln!(
+                            "[blk{}] Read at offset {}, len {}",
+                            self.id,
+                            offset,
+                            desc.len
+                        );
                     }
                     if self.disk.read_exact_at(&mut buf, offset).is_err()
                         || mem.write_at(desc.addr, &buf).is_err()
@@ -81,7 +113,12 @@ impl VirtioBlk {
                         return VIRTIO_BLK_S_IOERR;
                     };
                     if self.debug {
-                        printcrln!("Write at offset {}, len {}", offset, desc.len);
+                        printcrln!(
+                            "[blk{}] Write at offset {}, len {}",
+                            self.id,
+                            offset,
+                            desc.len
+                        );
                     }
                     if self.disk.write_all_at(&buf, offset).is_err() {
                         return VIRTIO_BLK_S_IOERR;

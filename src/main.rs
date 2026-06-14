@@ -193,7 +193,7 @@ fn main() -> Result<(), String> {
 
     if let Some(disk_path) = &config.disk {
         let virtio_blk_gsi = 14;
-        let blk = crate::virtio::blk::VirtioBlk::new(disk_path, config.debug)
+        let blk = crate::virtio::blk::VirtioBlk::new(0, disk_path, config.debug)
             .map_err(|e| format!("Failed to open disk image {disk_path}: {e}"))?;
 
         let virtio_blk_device = Arc::new(Mutex::new(crate::virtio::mmio::VirtioMmioDevice::new(
