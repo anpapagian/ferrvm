@@ -84,6 +84,7 @@ Example runs for both KVM and bhyve backends can be found in the following gists
 | `--initramfs`  | Path to the initramfs image to boot                | none     |
 | `--mem`        | Guest memory in MiB                                | `1024`   |
 | `--cmdline`    | Kernel command line                                | built-in |
+| `--disk`       | Path to a raw disk image to attach as virtio-blk   | none     |
 | `--debug`      | Enable debug mode                                  | off      |
 
 Run `cargo run -- --help` for the full list.
@@ -108,7 +109,30 @@ A qemu-style Ctrl-A prefix is reserved for VMM control:
 
 ## Virtio
 
-ferrvm provides a **virtio-rng** entropy device over the virtio-mmio transport.
+ferrvm exposes virtio devices over the virtio-mmio (Version 2, modern) transport:
+
+- **virtio-rng** — an entropy source for the guest.
+- **virtio-blk** — a block device backed by a raw disk image on the host.
+
+### virtio-blk
+
+Attach a raw disk image with `--disk`:
+
+```sh
+# Create a 1 GiB raw image
+truncate -s 1G disk.img
+
+cargo run -- --kernel ./vmlinuz --initramfs ./initramfs.cpio.gz --disk ./disk.img
+```
+
+The image is exposed to the guest as a virtio-blk device (typically `/dev/vda`).
+It is a raw image (no qcow2/format layer); its size determines the reported
+capacity, and writes go straight through to the host file.
+
+The device negotiates the `VIRTIO_F_VERSION_1`, `VIRTIO_BLK_F_FLUSH`, and
+`VIRTIO_BLK_F_SEG_MAX` features, and supports read, write, flush, and get-id
+(`VIRTIO_BLK_T_IN` / `VIRTIO_BLK_T_OUT` / `VIRTIO_BLK_T_FLUSH` / `VIRTIO_BLK_T_GET_ID`) 
+requests.
 
 ## License
 
