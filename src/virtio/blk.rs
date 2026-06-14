@@ -92,6 +92,29 @@ impl VirtioBlk {
             return VIRTIO_BLK_S_OK;
         }
 
+        // Bounds check: the request must lie entirely within the disk's
+        // capacity. Without this, a read past EOF fails inconsistently while a
+        // write past EOF would silently extend the backing image.
+        let total_len: u64 = data.iter().map(|d| u64::from(d.len)).sum();
+        let disk_bytes = self.capacity_sectors * SECTOR_SIZE;
+        let start = sector.checked_mul(SECTOR_SIZE);
+        let end = start.and_then(|s| s.checked_add(total_len));
+        match end {
+            Some(end) if end <= disk_bytes => {}
+            _ => {
+                if self.debug {
+                    printcrln!(
+                        "[blk{}] Out-of-bounds request: sector {}, len {} (capacity {} bytes)",
+                        self.id,
+                        sector,
+                        total_len,
+                        disk_bytes
+                    );
+                }
+                return VIRTIO_BLK_S_IOERR;
+            }
+        }
+
         let mut offset = sector * SECTOR_SIZE;
 
         for desc in data {
