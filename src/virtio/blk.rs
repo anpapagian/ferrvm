@@ -13,10 +13,17 @@ const VIRTIO_BLK_S_OK: u8 = 0;
 const VIRTIO_BLK_S_IOERR: u8 = 1;
 const VIRTIO_BLK_S_UNSUPP: u8 = 2;
 
+// Feature bit: device reports the maximum number of segments in a request.
+const VIRTIO_BLK_F_SEG_MAX: u64 = 1 << 2;
 // Feature bit: device supports the flush (cache) command.
 const VIRTIO_BLK_F_FLUSH: u64 = 1 << 9;
 
 const SECTOR_SIZE: u64 = 512;
+
+// Maximum number of data segments per request. A descriptor chain holds at
+// most QueueNumMax (256, see mmio.rs) descriptors, two of which are reserved
+// for the request header and the status byte.
+const VIRTIO_BLK_SEG_MAX: u32 = 256 - 2;
 
 const VIRTIO_BLK_ID_BYTES: usize = 20;
 const VIRTIO_BLK_ID_PREFIX: &str = "ferrvm-blk";
@@ -163,7 +170,7 @@ impl VirtioDevice for VirtioBlk {
     }
 
     fn device_features(&self) -> u64 {
-        super::VIRTIO_F_VERSION_1 | VIRTIO_BLK_F_FLUSH
+        super::VIRTIO_F_VERSION_1 | VIRTIO_BLK_F_FLUSH | VIRTIO_BLK_F_SEG_MAX
     }
 
     fn num_queues(&self) -> usize {
@@ -179,7 +186,13 @@ impl VirtioDevice for VirtioBlk {
     }
 
     fn read_config(&self, offset: u64, data: &mut [u8]) {
-        let cfg = self.capacity_sectors.to_le_bytes();
+        // struct virtio_blk_config layout:
+        //   le64 capacity;  // offset 0
+        //   le32 size_max;  // offset 8
+        //   le32 seg_max;   // offset 12
+        let mut cfg = [0u8; 16];
+        cfg[0..8].copy_from_slice(&self.capacity_sectors.to_le_bytes());
+        cfg[12..16].copy_from_slice(&VIRTIO_BLK_SEG_MAX.to_le_bytes());
         for (i, byte) in data.iter_mut().enumerate() {
             let idx = offset as usize + i;
             *byte = if idx < cfg.len() { cfg[idx] } else { 0 };
