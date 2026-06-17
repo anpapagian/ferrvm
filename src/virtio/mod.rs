@@ -1,11 +1,6 @@
 pub mod blk;
-pub mod mmio;
 pub mod pci;
 pub mod rng;
-
-pub const VIRTIO_MAGIC: u32 = 0x7472_6976; // "virt"
-pub const VIRTIO_VERSION: u32 = 2; // Version 2 (modern)
-pub const VIRTIO_VENDOR: u32 = 0x554d_4551; // QEMU vendor ID
 
 pub const VIRTIO_F_VERSION_1: u64 = 1 << 32;
 

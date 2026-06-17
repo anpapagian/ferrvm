@@ -41,13 +41,7 @@ pub const GSI_COM1: u32 = 4;
 pub const PCI_MMIO_WINDOW_END: u64 = 0xd000_0000;
 
 /// Default kernel command line if none is provided via CLI.
-///
-/// `virtio_mmio.device=512@0xd0000200:14` refers to the block device
-/// As the disk image is optional, there are cases where this is not
-/// needed but it seems that Linux as a guest handles that correctly.
-/// Next step is to implement virtio-pci and this will remove all
-/// `virtio_mmio.device` references from the command line.
-pub const DEFAULT_CMDLINE: &str = "console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 noapic reboot=t panic=1 oops=panic nomodule rdinit=/sbin/init virtio_mmio.device=512@0xd0000200:14";
+pub const DEFAULT_CMDLINE: &str = "console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 noapic reboot=t panic=1 oops=panic nomodule rdinit=/sbin/init";
 
 struct NullDevice;
 impl BusDevice for NullDevice {
@@ -176,10 +170,11 @@ fn main() -> Result<(), String> {
     let mmio_bus = Bus::new();
 
     let pci_root = Arc::new(Mutex::new(crate::pci::PciRootBus::new()));
-    pci_root
-        .lock()
-        .expect("pci root poisoned")
-        .add_device(0, 0, Arc::new(Mutex::new(crate::pci::host_bridge())));
+    pci_root.lock().expect("pci root poisoned").add_device(
+        0,
+        0,
+        Arc::new(Mutex::new(crate::pci::host_bridge())),
+    );
     pio_bus
         .register(0xcf8, 8, pci_root.clone())
         .map_err(|e| format!("Failed to register PCI config ports: {e}"))?;
@@ -237,10 +232,12 @@ fn main() -> Result<(), String> {
         let blk = crate::virtio::blk::VirtioBlk::new(0, disk_path, config.debug)
             .map_err(|e| format!("Failed to open disk image {disk_path}: {e}"))?;
 
-        let virtio_blk_device = Arc::new(Mutex::new(crate::virtio::mmio::VirtioMmioDevice::new(
+        // Register Virtio PCI block device at slot 00:02.0 (INTx on GSI 14).
+        let virtio_blk_device = Arc::new(Mutex::new(crate::virtio::pci::VirtioPciDevice::new(
             guest_mem.clone(),
             Arc::new(crate::serial::NullIrqSink),
             Box::new(blk),
+            virtio_blk_gsi as u8,
         )));
 
         let virtio_blk_irq_sink = vm
@@ -252,9 +249,14 @@ fn main() -> Result<(), String> {
             .expect("virtio blk poisoned")
             .replace_irq_sink(virtio_blk_irq_sink);
 
-        mmio_bus
-            .register(0xd000_0200, 512, virtio_blk_device)
-            .map_err(|e| format!("Failed to register Virtio MMIO BLK: {e}"))?;
+        pci_root
+            .lock()
+            .expect("pci root poisoned")
+            .add_device(2, 0, virtio_blk_device.clone());
+        pci_mmio
+            .lock()
+            .expect("virtio-pci dispatcher poisoned")
+            .add_device(virtio_blk_device);
     }
 
     let serial = Arc::new(Mutex::new(Serial::new(
