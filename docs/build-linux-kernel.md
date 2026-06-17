@@ -21,7 +21,9 @@ scripts/config --disable MODULES
 scripts/config --enable SERIAL_8250
 scripts/config --enable SERIAL_8250_CONSOLE
 scripts/config --enable EARLY_PRINTK
+scripts/config --enable PCI
 scripts/config --enable VIRTIO
+scripts/config --enable VIRTIO_PCI
 scripts/config --enable VIRTIO_MMIO
 scripts/config --enable VIRTIO_BLK
 scripts/config --enable VIRTIO_NET
