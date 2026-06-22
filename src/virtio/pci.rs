@@ -482,3 +482,128 @@ impl BusDevice for VirtioPciMmio {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::GuestMemory;
+    use crate::serial::NullIrqSink;
+
+    /// Minimal backend: one queue, always asks for a used-ring interrupt.
+    struct DummyDevice;
+    impl VirtioDevice for DummyDevice {
+        fn device_id(&self) -> u32 {
+            4 // entropy
+        }
+        fn device_features(&self) -> u64 {
+            super::super::VIRTIO_F_VERSION_1
+        }
+        fn num_queues(&self) -> usize {
+            1
+        }
+        fn on_notify(&mut self, _idx: usize, _q: &mut Virtqueue, _mem: &GuestMemory) -> bool {
+            true
+        }
+    }
+
+    fn device() -> VirtioPciDevice {
+        let mem = Arc::new(GuestMemory::allocate(0x1000).expect("alloc"));
+        VirtioPciDevice::new(mem, Arc::new(NullIrqSink), Box::new(DummyDevice), 12)
+    }
+
+    fn cfg_u8(d: &VirtioPciDevice, off: u64) -> u8 {
+        let mut b = [0u8; 1];
+        d.config_read(off, &mut b);
+        b[0]
+    }
+    fn cfg_u16(d: &VirtioPciDevice, off: u64) -> u16 {
+        let mut b = [0u8; 2];
+        d.config_read(off, &mut b);
+        u16::from_le_bytes(b)
+    }
+    fn cfg_u32(d: &VirtioPciDevice, off: u64) -> u32 {
+        let mut b = [0u8; 4];
+        d.config_read(off, &mut b);
+        u32::from_le_bytes(b)
+    }
+
+    #[test]
+    fn config_advertises_modern_virtio() {
+        let d = device();
+        assert_eq!(cfg_u16(&d, 0x00), 0x1af4); // virtio vendor
+        assert_eq!(cfg_u16(&d, 0x02), 0x1040 + 4); // modern device id for RNG
+        assert_eq!(cfg_u8(&d, 0x08), 0x01); // revision 1
+        assert_eq!(cfg_u16(&d, 0x06) & 0x0010, 0x0010); // capability list bit
+        assert_eq!(cfg_u8(&d, 0x34), CAP_COMMON as u8); // capabilities pointer
+        assert_eq!(cfg_u8(&d, 0x3c), 12); // interrupt line
+        assert_eq!(cfg_u8(&d, 0x3d), 0x01); // INTA
+    }
+
+    #[test]
+    fn capability_chain_is_well_formed() {
+        let d = device();
+        // First cap is the common-cfg structure inside BAR0.
+        assert_eq!(cfg_u8(&d, CAP_COMMON as u64), PCI_CAP_ID_VNDR);
+        assert_eq!(cfg_u8(&d, CAP_COMMON as u64 + 3), VIRTIO_PCI_CAP_COMMON_CFG);
+        // The chain ends at the device-cfg cap.
+        assert_eq!(cfg_u8(&d, CAP_DEVICE as u64 + 1), 0x00);
+        assert_eq!(cfg_u8(&d, CAP_DEVICE as u64 + 3), VIRTIO_PCI_CAP_DEVICE_CFG);
+    }
+
+    #[test]
+    fn bar0_sizing_and_assignment() {
+        let mut d = device();
+        // All-ones probe reports a 4 KiB, 32-bit, non-prefetchable region.
+        d.config_write(0x10, &0xffff_ffffu32.to_le_bytes());
+        assert_eq!(cfg_u32(&d, 0x10), 0xffff_f000);
+        // A real assignment reads back verbatim (low bits forced to 0).
+        d.config_write(0x10, &0x4000_0000u32.to_le_bytes());
+        assert_eq!(d.bar_base(), 0x4000_0000);
+    }
+
+    #[test]
+    fn command_register_gates_memory_space() {
+        let mut d = device();
+        assert!(!d.mem_enabled());
+        d.config_write(0x04, &0x0006u16.to_le_bytes()); // memory + bus master
+        assert!(d.mem_enabled());
+    }
+
+    #[test]
+    fn notify_raises_and_isr_read_clears() {
+        let mut d = device();
+        let mut num = [0u8; 2];
+        d.mmio_read(0x12, &mut num); // common_cfg.num_queues
+        assert_eq!(u16::from_le_bytes(num), 1);
+
+        d.mmio_write(NOTIFY_OFFSET, &0u16.to_le_bytes()); // notify queue 0
+        let mut isr = [0u8; 1];
+        d.mmio_read(ISR_OFFSET, &mut isr);
+        assert_eq!(isr[0], ISR_QUEUE);
+        // ISR is read-to-clear.
+        d.mmio_read(ISR_OFFSET, &mut isr);
+        assert_eq!(isr[0], 0);
+    }
+
+    #[test]
+    fn dispatcher_routes_only_when_enabled() {
+        let d = Arc::new(Mutex::new(device()));
+        d.lock()
+            .unwrap()
+            .config_write(0x10, &0x4000_0000u32.to_le_bytes());
+        let mut disp = VirtioPciMmio::new(0x4000_0000);
+        disp.add_device(d.clone());
+
+        // Memory space still disabled: the window reads back all-ones.
+        let mut data = [0u8; 2];
+        disp.read(0x12, &mut data);
+        assert_eq!(data, [0xff, 0xff]);
+
+        // Enable memory space; the BAR now answers at window base + 0x12.
+        d.lock()
+            .unwrap()
+            .config_write(0x04, &0x0002u16.to_le_bytes());
+        disp.read(0x12, &mut data);
+        assert_eq!(u16::from_le_bytes(data), 1); // num_queues
+    }
+}
