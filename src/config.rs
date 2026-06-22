@@ -15,6 +15,10 @@ pub struct Config {
     #[arg(long, default_value_t = 1024)]
     pub mem: usize,
 
+    /// Number of vCPUs (1–255); values above 1 enable SMP.
+    #[arg(long, default_value_t = 1)]
+    pub cpus: u32,
+
     /// Command line arguments to pass to the kernel
     #[arg(long)]
     pub cmdline: Option<String>,

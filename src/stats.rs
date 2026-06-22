@@ -29,3 +29,13 @@ impl Default for ExitStats {
         Self::new()
     }
 }
+
+impl std::ops::AddAssign for ExitStats {
+    fn add_assign(&mut self, other: Self) {
+        self.io_exits += other.io_exits;
+        self.mmio_exits += other.mmio_exits;
+        self.hlt_exits += other.hlt_exits;
+        self.shutdown_exits += other.shutdown_exits;
+        self.other_exits += other.other_exits;
+    }
+}

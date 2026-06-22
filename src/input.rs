@@ -1,6 +1,6 @@
 //! Stdin reader thread
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
@@ -15,7 +15,7 @@ pub struct Shutdown {
 #[derive(Default)]
 struct ShutdownInner {
     flag: AtomicBool,
-    kick_thread: AtomicU64,
+    kick_threads: Mutex<Vec<libc::pthread_t>>,
 }
 
 impl Shutdown {
@@ -23,27 +23,32 @@ impl Shutdown {
         Self::default()
     }
 
-    /// Register a thread to receive `SIGUSR1` every time `request()` fires.
-    /// Intended for the vCPU thread so the signal EINTRs out of `KVM_RUN`
-    /// and lets the loop observe the flag.
-    pub fn set_kick_target(&self, thread: libc::pthread_t) {
-        #[allow(clippy::useless_conversion)]
+    /// Register this vCPU thread to receive SIGUSR1 shutdown kicks.
+    pub fn add_kick_target(&self) {
+        // SAFETY: pthread_self has no preconditions and returns the caller's id.
+        let thread = unsafe { libc::pthread_self() };
         self.inner
-            .kick_thread
-            .store(thread.into(), Ordering::SeqCst);
+            .kick_threads
+            .lock()
+            .expect("kick targets poisoned")
+            .push(thread);
     }
 
-    /// Mark shutdown requested.
+    /// Mark shutdown requested and kick every registered vCPU thread.
     pub fn request(&self) {
         self.inner.flag.store(true, Ordering::SeqCst);
-        // Always send the kick, even on re-entry: if the vCPU somehow raced
+        // Always send the kick, even on re-entry: if a vCPU somehow raced
         // past an earlier kick back into KVM_RUN, a second signal bumps it
         // out again.
-        let t = self.inner.kick_thread.load(Ordering::SeqCst) as libc::pthread_t;
-        if t != 0 {
-            // SAFETY: caller of set_kick_target is responsible for keeping
-            // the target thread alive until shutdown is actually observed.
-            unsafe { libc::pthread_kill(t, libc::SIGUSR1) };
+        let targets = self
+            .inner
+            .kick_threads
+            .lock()
+            .expect("kick targets poisoned");
+        for &thread in targets.iter() {
+            // SAFETY: vCPU threads stay alive until shutdown is observed and
+            // they exit their run loops; the ids remain valid until then.
+            unsafe { libc::pthread_kill(thread, libc::SIGUSR1) };
         }
     }
 

@@ -8,8 +8,10 @@ use crate::traits::Vcpu;
 
 use ferrvm::printcrln;
 
+/// Run one vCPU until it exits, then request shutdown for the whole VM.
 pub fn run_vcpu(
     vcpu: &mut dyn Vcpu,
+    cpu_id: u32,
     memory: &memory::GuestMemory,
     pio_bus: &Bus,
     mmio_bus: &Bus,
@@ -19,34 +21,37 @@ pub fn run_vcpu(
     let mut stats = ExitStats::new();
     let start_time = std::time::Instant::now();
 
-    loop {
+    let result = loop {
         if shutdown.requested() {
-            break;
+            break Ok(());
         }
 
         // Run the vCPU until the next vm exit.
         let should_continue = match vcpu.step_run(&mut stats, memory, pio_bus, mmio_bus, config) {
             Ok(r) => r,
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(e) => return Err(format!("vCPU execution failed: {e}")),
+            // EINTR is a shutdown kick; EAGAIN means an AP is still waiting for SIPI.
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock
+                ) =>
+            {
+                continue;
+            }
+            Err(e) => break Err(format!("vCPU {cpu_id} execution failed: {e}")),
         };
 
         if !should_continue {
-            break;
+            break Ok(());
         }
-    }
+    };
+
+    shutdown.request();
 
     let elapsed = start_time.elapsed();
-    printcrln!("\n[vcpu] vCPU execution stopped after {elapsed:?}");
-    printcrln!("[vcpu] Exit statistics:");
-    printcrln!("  Total exits:    {}", stats.total());
-    printcrln!("  I/O exits:      {}", stats.io_exits);
-    printcrln!("  MMIO exits:     {}", stats.mmio_exits);
-    printcrln!("  HLT exits:      {}", stats.hlt_exits);
-    printcrln!("  Shutdown exits: {}", stats.shutdown_exits);
-    printcrln!("  Other exits:    {}", stats.other_exits);
+    printcrln!("[vcpu {cpu_id}] execution stopped after {elapsed:?}");
 
-    Ok(stats)
+    result.map(|()| stats)
 }
 
 fn dump_segment(name: &str, seg: &Segment) {

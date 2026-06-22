@@ -11,10 +11,10 @@ use super::api::{
     VM_GET_SEGMENT_DESCRIPTOR, VM_GLA2GPA_NOFAULT, VM_MAX_NAMELEN, VM_MAX_SEG_NAMELEN,
     VM_MMAP_MEMSEG, VM_RESET_CPU, VM_RUN, VM_SET_REGISTER, VM_SET_RUN_STATE,
     VM_SET_SEGMENT_DESCRIPTOR, VMM_CREATE_VM, VMM_CTL_DEV, VMM_CURRENT_INTERFACE_VERSION,
-    VMM_DESTROY_VM, VMM_INTERFACE_VERSION, VMM_VM_SUPPORTED, VRK_RESET, VRS_RUN, VmActivateCpu,
-    VmCapType, VmCapability, VmCpuMode, VmCreateReq, VmDestroyReq, VmEntry, VmEntryUnion, VmExit,
-    VmGla2Gpa, VmGuestPaging, VmMemmap, VmMemseg, VmPagingMode, VmRegName, VmRegister, VmRunState,
-    VmSegDesc, VmVcpuReset,
+    VMM_DESTROY_VM, VMM_INTERFACE_VERSION, VMM_VM_SUPPORTED, VRK_RESET, VRS_INIT, VRS_RUN,
+    VmActivateCpu, VmCapType, VmCapability, VmCpuMode, VmCreateReq, VmDestroyReq, VmEntry,
+    VmEntryUnion, VmExit, VmGla2Gpa, VmGuestPaging, VmMemmap, VmMemseg, VmPagingMode, VmRegName,
+    VmRegister, VmRunState, VmSegDesc, VmVcpuReset,
 };
 use super::exithandler::handle_exit;
 use super::ioctl::{ioctl_with_mut_ref, ioctl_with_ref, ioctl_with_val};
@@ -612,10 +612,12 @@ impl Vcpu for BhyveVcpu<'_> {
             }
         }
 
-        printcrln!("[bhyve] Setting vCPU {} run state to RUN", self.id);
+        // APs wait for the guest's INIT/SIPI sequence; only the BSP starts now.
+        let state = if self.id == 0 { VRS_RUN } else { VRS_INIT };
+        printcrln!("[bhyve] Setting vCPU {} run state to {state:#x}", self.id);
         let vrs = VmRunState {
             vcpuid: self.id as i32,
-            state: VRS_RUN,
+            state,
             sipi_vector: 0,
             _pad: [0; 3],
         };
