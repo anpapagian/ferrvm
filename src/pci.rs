@@ -190,3 +190,63 @@ impl BusDevice for PciRootBus {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn setup() -> PciRootBus {
+        let mut bus = PciRootBus::new();
+        bus.add_device(0, 0, Arc::new(Mutex::new(host_bridge())));
+        bus
+    }
+
+    /// Latch the address of `reg` on slot `dev` and read `CONFIG_DATA` as a dword.
+    fn read_cfg(bus: &mut PciRootBus, dev: u8, reg: u32) -> u32 {
+        let addr: u32 = 0x8000_0000 | (u32::from(dev) << 11) | (reg & 0xfc);
+        bus.write(0, &addr.to_le_bytes());
+        let mut data = [0u8; 4];
+        bus.read(4, &mut data);
+        u32::from_le_bytes(data)
+    }
+
+    #[test]
+    fn config_address_reads_back() {
+        let mut bus = setup();
+        bus.write(0, &0x8000_0000u32.to_le_bytes());
+        let mut data = [0u8; 4];
+        bus.read(0, &mut data);
+        assert_eq!(u32::from_le_bytes(data), 0x8000_0000);
+    }
+
+    #[test]
+    fn reads_host_bridge_vendor_device() {
+        let mut bus = setup();
+        let id = read_cfg(&mut bus, 0, 0x00);
+        assert_eq!(id & 0xffff, 0x8086); // Intel
+        assert_eq!(id >> 16, 0x1237); // 440FX
+    }
+
+    #[test]
+    fn host_bridge_class_is_bridge() {
+        let mut bus = setup();
+        let class = read_cfg(&mut bus, 0, 0x08);
+        assert_eq!(class >> 24, 0x06); // base class: bridge
+    }
+
+    #[test]
+    fn absent_slot_reads_all_ones() {
+        let mut bus = setup();
+        assert_eq!(read_cfg(&mut bus, 1, 0x00), 0xffff_ffff);
+    }
+
+    #[test]
+    fn disabled_address_reads_all_ones() {
+        let mut bus = setup();
+        // No enable bit (bit 31) -> CONFIG_DATA decodes to nothing.
+        bus.write(0, &0u32.to_le_bytes());
+        let mut data = [0u8; 4];
+        bus.read(4, &mut data);
+        assert_eq!(data, [0xff; 4]);
+    }
+}
