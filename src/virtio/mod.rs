@@ -1,5 +1,6 @@
 pub mod blk;
 pub mod mmio;
+pub mod pci;
 pub mod rng;
 
 pub const VIRTIO_MAGIC: u32 = 0x7472_6976; // "virt"

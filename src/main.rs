@@ -36,6 +36,10 @@ use crate::{
 /// the 8259 to LAPIC IRQ 0x24 (vector) on x86.
 pub const GSI_COM1: u32 = 4;
 
+/// Upper bound of the virtio-pci BAR window, just below the legacy virtio-mmio
+/// region at `0xd000_0000`.
+pub const PCI_MMIO_WINDOW_END: u64 = 0xd000_0000;
+
 /// Default kernel command line if none is provided via CLI.
 ///
 /// `virtio_mmio.device=512@0xd0000200:14` refers to the block device
@@ -43,7 +47,7 @@ pub const GSI_COM1: u32 = 4;
 /// needed but it seems that Linux as a guest handles that correctly.
 /// Next step is to implement virtio-pci and this will remove all
 /// `virtio_mmio.device` references from the command line.
-pub const DEFAULT_CMDLINE: &str = "console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 noapic reboot=t panic=1 oops=panic nomodule rdinit=/sbin/init virtio_mmio.device=512@0xd0000000:12 virtio_mmio.device=512@0xd0000200:14";
+pub const DEFAULT_CMDLINE: &str = "console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 noapic reboot=t panic=1 oops=panic nomodule rdinit=/sbin/init virtio_mmio.device=512@0xd0000200:14";
 
 struct NullDevice;
 impl BusDevice for NullDevice {
@@ -171,18 +175,43 @@ fn main() -> Result<(), String> {
     let pio_bus = Bus::new();
     let mmio_bus = Bus::new();
 
-    let mut pci_root = crate::pci::PciRootBus::new();
-    pci_root.add_device(0, 0, Arc::new(Mutex::new(crate::pci::host_bridge())));
+    let pci_root = Arc::new(Mutex::new(crate::pci::PciRootBus::new()));
+    pci_root
+        .lock()
+        .expect("pci root poisoned")
+        .add_device(0, 0, Arc::new(Mutex::new(crate::pci::host_bridge())));
     pio_bus
-        .register(0xcf8, 8, Arc::new(Mutex::new(pci_root)))
+        .register(0xcf8, 8, pci_root.clone())
         .map_err(|e| format!("Failed to register PCI config ports: {e}"))?;
 
-    // Register Virtio MMIO RNG device
+    // virtio-pci BAR window. Without ACPI/firmware, Linux assigns 32-bit BARs
+    // just above the top of guest RAM and below the legacy 0xd000_0000 MMIO
+    // region. A single dispatcher claims that whole window and routes accesses
+    // to whichever device's BAR currently covers them.
+    let pci_window_base = ram_size as u64;
+    if pci_window_base >= PCI_MMIO_WINDOW_END {
+        return Err(format!(
+            "Guest RAM ({ram_size} bytes) leaves no room for the PCI MMIO window"
+        ));
+    }
+    let pci_mmio = Arc::new(Mutex::new(crate::virtio::pci::VirtioPciMmio::new(
+        pci_window_base,
+    )));
+    mmio_bus
+        .register(
+            pci_window_base,
+            PCI_MMIO_WINDOW_END - pci_window_base,
+            pci_mmio.clone(),
+        )
+        .map_err(|e| format!("Failed to register virtio-pci MMIO window: {e}"))?;
+
+    // Register Virtio PCI RNG device at slot 00:01.0 (INTx on GSI 12).
     let virtio_rng_gsi = 12;
-    let virtio_rng_device = Arc::new(Mutex::new(crate::virtio::mmio::VirtioMmioDevice::new(
+    let virtio_rng_device = Arc::new(Mutex::new(crate::virtio::pci::VirtioPciDevice::new(
         guest_mem.clone(),
         Arc::new(crate::serial::NullIrqSink),
         Box::new(crate::virtio::rng::VirtioRng::new()),
+        virtio_rng_gsi as u8,
     )));
 
     let virtio_rng_irq_sink = vm
@@ -194,9 +223,14 @@ fn main() -> Result<(), String> {
         .expect("virtio rng poisoned")
         .replace_irq_sink(virtio_rng_irq_sink);
 
-    mmio_bus
-        .register(0xd000_0000, 512, virtio_rng_device)
-        .map_err(|e| format!("Failed to register Virtio MMIO RNG: {e}"))?;
+    pci_root
+        .lock()
+        .expect("pci root poisoned")
+        .add_device(1, 0, virtio_rng_device.clone());
+    pci_mmio
+        .lock()
+        .expect("virtio-pci dispatcher poisoned")
+        .add_device(virtio_rng_device);
 
     if let Some(disk_path) = &config.disk {
         let virtio_blk_gsi = 14;
