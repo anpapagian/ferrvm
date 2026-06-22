@@ -11,6 +11,7 @@ mod elf;
 mod hypervisor;
 mod input;
 mod memory;
+mod mptable;
 mod pci;
 mod serial;
 mod stats;
@@ -81,17 +82,20 @@ fn install_vcpu_kick_handler() -> Result<(), String> {
 fn main() -> Result<(), String> {
     let config = Config::parse();
 
+    // APIC ids are 8-bit; reserve one id for the I/O APIC.
+    let num_cpus = config.cpus;
+    if num_cpus == 0 || num_cpus > 255 {
+        return Err(format!("--cpus must be between 1 and 255 (got {num_cpus})"));
+    }
+    let smp = num_cpus > 1;
+
     printcrln!("[hypervisor] Starting Hypervisor initialization");
 
     let _raw = terminal::RawMode::enter().map_err(|e| format!("Failed to enter raw mode: {e}"))?;
     let shutdown = input::Shutdown::new();
 
-    // Register the vCPU thread (== main thread here) as the kick target
-    // BEFORE spawning the stdin reader, so a Ctrl-A x issued during setup
-    // can still interrupt us.
+    // Install the handler used to interrupt vCPUs blocked in KVM_RUN.
     install_vcpu_kick_handler()?;
-    // SAFETY: pthread_self has no preconditions and always returns the caller's id.
-    shutdown.set_kick_target(unsafe { libc::pthread_self() });
 
     let hypervisor: Box<dyn Hypervisor> = Box::new(NativeHypervisor::new()?);
 
@@ -120,8 +124,9 @@ fn main() -> Result<(), String> {
         .map_err(|e| format!("Failed to register guest memory with Hypervisor: {e}"))?;
     printcrln!("[vm] Registered guest memory with Hypervisor");
 
-    // Create vCPU
-    let mut vcpu = vm
+    // Create the bootstrap processor (vCPU 0); application processors follow
+    // once the buses and MP table are set up.
+    let vcpu = vm
         .create_vcpu(0)
         .map_err(|e| format!("Failed to create vCPU: {e}"))?;
     printcrln!("[vcpu] Created vCPU 0");
@@ -138,15 +143,21 @@ fn main() -> Result<(), String> {
         return Err(format!("Kernel not found at {}", config.kernel));
     }
 
-    let cmdline = config.cmdline.as_ref().map_or_else(
+    let cmdline: String = config.cmdline.as_ref().map_or_else(
         || {
+            // SMP needs the I/O APIC, so drop the single-CPU `noapic` default.
+            let base = if smp {
+                DEFAULT_CMDLINE.replace(" noapic", "")
+            } else {
+                DEFAULT_CMDLINE.to_string()
+            };
             printcrln!("[boot] No kernel command line provided, using default:");
-            printcrln!("       {}", DEFAULT_CMDLINE);
-            DEFAULT_CMDLINE
+            printcrln!("       {base}");
+            base
         },
         |cmdline| {
-            printcrln!("[boot] Kernel command line: {}", cmdline);
-            cmdline.as_str()
+            printcrln!("[boot] Kernel command line: {cmdline}");
+            cmdline.clone()
         },
     );
 
@@ -154,7 +165,7 @@ fn main() -> Result<(), String> {
         &guest_mem,
         vcpu.as_ref(),
         &config.kernel,
-        cmdline,
+        &cmdline,
         config.initramfs.as_deref(),
     )
     .map_err(|e| format!("Failed to load kernel: {e}"))?;
@@ -282,19 +293,82 @@ fn main() -> Result<(), String> {
     crate::serial::register_serial(vm.as_ref(), GSI_COM1, &serial)
         .map_err(|e| format!("Failed to register COM1 serial device with VM: {e}"))?;
 
-    printcrln!("[vcpu] Starting vCPU execution...");
+    // Create APs in wait-for-SIPI state; the guest BSP starts them via LAPIC.
+    let mut vcpus = vec![vcpu];
+    for id in 1..num_cpus {
+        let ap = vm
+            .create_vcpu(id)
+            .map_err(|e| format!("Failed to create vCPU {id}: {e}"))?;
+        ap.setup()
+            .map_err(|e| format!("Failed to set up vCPU {id}: {e}"))?;
+        vcpus.push(ap);
+    }
 
-    let _stats = vcpu::run_vcpu(
-        vcpu.as_mut(),
-        &guest_mem,
-        &pio_bus,
-        &mmio_bus,
-        &shutdown,
-        &config,
-    )
-    .map_err(|e| format!("Failed to run vCPU: {e}"))?;
+    // Provide CPU and I/O APIC descriptions to non-ACPI SMP guests.
+    if smp {
+        crate::mptable::write_mptable(&guest_mem, num_cpus as u8)
+            .map_err(|e| format!("Failed to write MP table: {e}"))?;
+        printcrln!("[vm] MP table written for {num_cpus} CPU(s)");
+    }
 
-    printcrln!("[vm] VM execution completed");
+    printcrln!("[vcpu] Starting execution on {num_cpus} vCPU(s)...");
+
+    let config_ref = &config;
+    let mut totals = crate::stats::ExitStats::new();
+    let mut run_error: Option<String> = None;
+
+    // Run each vCPU on its own thread, sharing guest memory and buses.
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = vcpus
+            .into_iter()
+            .enumerate()
+            .map(|(id, mut vcpu)| {
+                let mem = guest_mem.clone();
+                let pio = pio_bus.clone();
+                let mmio = mmio_bus.clone();
+                let shutdown = shutdown.clone();
+                scope.spawn(move || {
+                    shutdown.add_kick_target();
+                    vcpu::run_vcpu(
+                        vcpu.as_mut(),
+                        id as u32,
+                        &mem,
+                        &pio,
+                        &mmio,
+                        &shutdown,
+                        config_ref,
+                    )
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            match handle.join() {
+                Ok(Ok(stats)) => {
+                    totals += stats;
+                }
+                Ok(Err(e)) => {
+                    run_error.get_or_insert(e);
+                }
+                Err(_) => {
+                    run_error.get_or_insert_with(|| "a vCPU thread panicked".to_string());
+                }
+            }
+        }
+    });
+
+    printcrln!("\n[vm] VM execution completed");
+    printcrln!("[vm] Aggregate exit statistics across {num_cpus} vCPU(s):");
+    printcrln!("  Total exits:    {}", totals.total());
+    printcrln!("  I/O exits:      {}", totals.io_exits);
+    printcrln!("  MMIO exits:     {}", totals.mmio_exits);
+    printcrln!("  HLT exits:      {}", totals.hlt_exits);
+    printcrln!("  Shutdown exits: {}", totals.shutdown_exits);
+    printcrln!("  Other exits:    {}", totals.other_exits);
+
+    if let Some(e) = run_error {
+        return Err(format!("Failed to run vCPU: {e}"));
+    }
 
     Ok(())
 }
