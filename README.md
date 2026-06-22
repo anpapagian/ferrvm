@@ -109,7 +109,9 @@ A qemu-style Ctrl-A prefix is reserved for VMM control:
 
 ## Virtio
 
-ferrvm exposes virtio devices over the virtio-mmio (Version 2, modern) transport:
+ferrvm exposes virtio devices over the virtio-pci (virtio 1.0, modern) transport.
+A minimal PCI host bridge (Intel 440FX) sits at slot 00:00.0, and each virtio
+device appears as a PCI function behind it:
 
 - **virtio-rng** — an entropy source for the guest.
 - **virtio-blk** — a block device backed by a raw disk image on the host.
