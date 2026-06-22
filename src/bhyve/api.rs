@@ -258,6 +258,16 @@ pub struct VmIsaIrq {
     pub ioapic_irq: libc::c_int,
 }
 
+/// Argument to `VM_LAPIC_MSI`: an MSI message for the in-kernel local APIC to
+/// deliver. Field order matches the illumos `vm_lapic_msi` struct (`msg`
+/// before `addr`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct VmLapicMsi {
+    pub msg: u64,
+    pub addr: u64,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct VmVcpuReset {

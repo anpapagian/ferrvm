@@ -1,11 +1,7 @@
 //! virtio-pci transport (virtio 1.0).
 //!
-//! A `VirtioPciDevice` presents a `VirtioDevice` backend to the guest as a
-//! PCI function. Configuration space advertises the IDs, BAR0 and the virtio
-//! capability chain; BAR0 is an MMIO region holding the common, ISR, notify and
-//! device-specific structures. All BARs are routed through a single
-//! `VirtioPciMmio` dispatcher over a fixed window, since the guest assigns
-//! BAR addresses at run time. Interrupts use `INTx`.
+//! Virtio PCI transport. BAR0 contains the device registers and MSI-X table;
+//! interrupts use MSI-X when enabled, with legacy `INTx` as a fallback.
 
 use std::sync::{Arc, Mutex};
 
@@ -13,7 +9,7 @@ use super::{VirtioDevice, Virtqueue};
 use crate::bus::BusDevice;
 use crate::memory::GuestMemory;
 use crate::pci::{ConfigSpace, PciDevice};
-use crate::serial::IrqSink;
+use crate::serial::{IrqSink, MsiSink};
 
 // ---- PCI identifiers -------------------------------------------------------
 const VIRTIO_PCI_VENDOR: u16 = 0x1af4; // Red Hat / virtio
@@ -21,6 +17,7 @@ const VIRTIO_PCI_DEVICE_BASE: u16 = 0x1040; // modern device IDs: 0x1040 + virti
 
 // ---- PCI capability chain --------------------------------------------------
 const PCI_CAP_ID_VNDR: u8 = 0x09;
+const PCI_CAP_ID_MSIX: u8 = 0x11;
 const VIRTIO_PCI_CAP_COMMON_CFG: u8 = 1;
 const VIRTIO_PCI_CAP_NOTIFY_CFG: u8 = 2;
 const VIRTIO_PCI_CAP_ISR_CFG: u8 = 3;
@@ -31,10 +28,11 @@ const CAP_COMMON: usize = 0x40;
 const CAP_NOTIFY: usize = 0x50;
 const CAP_ISR: usize = 0x64;
 const CAP_DEVICE: usize = 0x74;
+const CAP_MSIX: usize = 0x84;
 
-/// `VIRTIO_MSI_NO_VECTOR`: reported for every MSI-X vector field since we only
-/// implement legacy `INTx`.
-const VIRTIO_MSI_NO_VECTOR: u64 = 0xffff;
+/// `VIRTIO_MSI_NO_VECTOR`: the "no vector assigned" sentinel for the virtio
+/// MSI-X configuration fields.
+const VIRTIO_MSI_NO_VECTOR: u16 = 0xffff;
 
 /// ISR status bit raised for a used-ring (virtqueue) interrupt.
 const ISR_QUEUE: u8 = 0x1;
@@ -42,6 +40,12 @@ const ISR_QUEUE: u8 = 0x1;
 /// Maximum virtqueue size advertised in `common_cfg.queue_size`. Must be a
 /// non-zero power of two; the driver treats a zero value as "queue absent".
 const QUEUE_SIZE_MAX: u16 = 256;
+
+// ---- MSI-X capability message control bits ---------------------------------
+const MSIX_MSGCTRL_ENABLE: u16 = 0x8000;
+const MSIX_MSGCTRL_FUNCTION_MASK: u16 = 0x4000;
+/// Per-vector control bit 0: when set the vector is masked.
+const MSIX_VECTOR_CTRL_MASK: u32 = 0x1;
 
 // ---- BAR0 layout -----------------------------------------------------------
 const BAR0_SIZE: u64 = 0x1000;
@@ -54,6 +58,34 @@ const NOTIFY_OFFSET: u64 = 0x0050;
 const NOTIFY_LEN: u64 = 0x0010;
 const DEVICE_CFG_OFFSET: u64 = 0x0100;
 const DEVICE_CFG_LEN: u64 = 0x0100;
+/// MSI-X table and PBA both live in BAR0 (BIR 0) at these offsets.
+const MSIX_TABLE_OFFSET: u64 = 0x0800;
+const MSIX_PBA_OFFSET: u64 = 0x0c00;
+const MSIX_ENTRY_SIZE: u64 = 16;
+
+/// One MSI-X table entry: 64-bit message address, 32-bit data, and a vector
+/// control dword whose bit 0 masks the vector.
+#[derive(Clone, Copy)]
+struct MsixEntry {
+    address: u64,
+    data: u32,
+    control: u32,
+}
+
+impl MsixEntry {
+    /// Power-on state: masked, no address/data.
+    const fn new() -> Self {
+        Self {
+            address: 0,
+            data: 0,
+            control: MSIX_VECTOR_CTRL_MASK,
+        }
+    }
+
+    const fn masked(&self) -> bool {
+        self.control & MSIX_VECTOR_CTRL_MASK != 0
+    }
+}
 
 /// PCI base class / subclass advertised for a given virtio device type. Linux
 /// binds virtio-pci purely on the vendor/device IDs, so this is cosmetic.
@@ -86,8 +118,9 @@ const fn write_cap(
     cs.set_u32(at + 12, bar_len);
 }
 
-/// Build the static PCI configuration space for a virtio function.
-const fn build_config(virtio_id: u32, irq_line: u8) -> ConfigSpace {
+/// Build the static PCI configuration space for a virtio function with an
+/// MSI-X table of `num_vectors` entries.
+const fn build_config(virtio_id: u32, irq_line: u8, num_vectors: u16) -> ConfigSpace {
     let mut cs = ConfigSpace::new();
     let (class, subclass) = pci_class(virtio_id);
 
@@ -138,12 +171,21 @@ const fn build_config(virtio_id: u32, irq_line: u8) -> ConfigSpace {
     write_cap(
         &mut cs,
         CAP_DEVICE,
-        0x00, // last capability
+        CAP_MSIX as u8, // chain on to the MSI-X capability
         0x10,
         VIRTIO_PCI_CAP_DEVICE_CFG,
         DEVICE_CFG_OFFSET as u32,
         DEVICE_CFG_LEN as u32,
     );
+
+    // MSI-X capability (standard PCI cap 0x11). Message control carries the
+    // table size (N-1); the enable and function-mask bits start clear. The
+    // table and PBA live in BAR0 (BIR 0) at their fixed offsets.
+    cs.set_u8(CAP_MSIX, PCI_CAP_ID_MSIX);
+    cs.set_u8(CAP_MSIX + 1, 0x00); // last capability
+    cs.set_u16(CAP_MSIX + 2, num_vectors - 1);
+    cs.set_u32(CAP_MSIX + 4, MSIX_TABLE_OFFSET as u32); // table offset | BIR 0
+    cs.set_u32(CAP_MSIX + 8, MSIX_PBA_OFFSET as u32); // PBA offset | BIR 0
 
     cs
 }
@@ -178,12 +220,23 @@ pub struct VirtioPciDevice {
     queue_select: u16,
     isr_status: u8,
     irq_sink: Arc<dyn IrqSink>,
+    msi_sink: Arc<dyn MsiSink>,
+    /// MSI-X table entries (BAR0 `MSIX_TABLE_OFFSET`), one per supported vector.
+    msix_table: Vec<MsixEntry>,
+    /// Pending bits (BAR0 `MSIX_PBA_OFFSET`): an interrupt arrived while its
+    /// vector was masked and is owed once it is unmasked.
+    msix_pending: Vec<bool>,
+    /// MSI-X vector assigned to each virtqueue (`VIRTIO_MSI_NO_VECTOR` = none).
+    queue_msix_vectors: Vec<u16>,
+    /// MSI-X vector for configuration-change interrupts.
+    config_msix_vector: u16,
 }
 
 impl VirtioPciDevice {
     pub fn new(
         mem: Arc<GuestMemory>,
         irq_sink: Arc<dyn IrqSink>,
+        msi_sink: Arc<dyn MsiSink>,
         device: Box<dyn VirtioDevice>,
         irq_line: u8,
     ) -> Self {
@@ -196,8 +249,11 @@ impl VirtioPciDevice {
             queues.push(queue);
         }
 
+        // One MSI-X vector per queue plus one for configuration changes.
+        let num_vectors = (num_queues + 1) as u16;
+
         Self {
-            config: build_config(virtio_id, irq_line),
+            config: build_config(virtio_id, irq_line, num_vectors),
             mem,
             device,
             queues,
@@ -208,6 +264,11 @@ impl VirtioPciDevice {
             queue_select: 0,
             isr_status: 0,
             irq_sink,
+            msi_sink,
+            msix_table: vec![MsixEntry::new(); num_vectors as usize],
+            msix_pending: vec![false; num_vectors as usize],
+            queue_msix_vectors: vec![VIRTIO_MSI_NO_VECTOR; num_queues],
+            config_msix_vector: VIRTIO_MSI_NO_VECTOR,
         }
     }
 
@@ -226,13 +287,62 @@ impl VirtioPciDevice {
         self.config.get_u16(0x04) & 0x0002 != 0
     }
 
-    /// Raise a used-ring interrupt: set the ISR queue bit and assert the line.
-    fn trigger_interrupt(&mut self) {
-        self.isr_status |= ISR_QUEUE;
-        self.irq_sink.set_level(true);
+    /// Whether the guest has set the MSI-X enable bit in the capability.
+    const fn msix_enabled(&self) -> bool {
+        self.config.get_u16(CAP_MSIX + 2) & MSIX_MSGCTRL_ENABLE != 0
     }
 
-    /// Reset all transport state to the power-on defaults.
+    /// Whether the MSI-X function mask (mask-all) bit is set.
+    const fn msix_function_masked(&self) -> bool {
+        self.config.get_u16(CAP_MSIX + 2) & MSIX_MSGCTRL_FUNCTION_MASK != 0
+    }
+
+    /// Raise a used-ring interrupt for `queue_idx`. Uses MSI-X when enabled and
+    /// the queue has a vector assigned; otherwise falls back to legacy `INTx`.
+    fn raise_queue_interrupt(&mut self, queue_idx: usize) {
+        if self.msix_enabled() {
+            let vector = self
+                .queue_msix_vectors
+                .get(queue_idx)
+                .copied()
+                .unwrap_or(VIRTIO_MSI_NO_VECTOR);
+            self.signal_msix(vector);
+        } else {
+            self.isr_status |= ISR_QUEUE;
+            self.irq_sink.set_level(true);
+        }
+    }
+
+    /// Deliver MSI-X vector `vector`, or record it pending if it is masked.
+    fn signal_msix(&mut self, vector: u16) {
+        let idx = vector as usize;
+        if vector == VIRTIO_MSI_NO_VECTOR || idx >= self.msix_table.len() {
+            return;
+        }
+        if self.msix_function_masked() || self.msix_table[idx].masked() {
+            self.msix_pending[idx] = true;
+            return;
+        }
+        let entry = self.msix_table[idx];
+        self.msi_sink.signal(entry.address, entry.data);
+    }
+
+    /// Deliver any pending MSI-X interrupts whose vector is now unmasked. Called
+    /// after a mask bit (per-vector or function-wide) is cleared.
+    fn deliver_pending(&mut self) {
+        if !self.msix_enabled() || self.msix_function_masked() {
+            return;
+        }
+        for idx in 0..self.msix_table.len() {
+            if self.msix_pending[idx] && !self.msix_table[idx].masked() {
+                self.msix_pending[idx] = false;
+                let entry = self.msix_table[idx];
+                self.msi_sink.signal(entry.address, entry.data);
+            }
+        }
+    }
+
+    /// Reset virtio state and vector assignments, preserving the PCI MSI-X table.
     fn reset(&mut self) {
         for q in &mut self.queues {
             *q = Virtqueue::new();
@@ -244,6 +354,56 @@ impl VirtioPciDevice {
         self.queue_select = 0;
         self.isr_status = 0;
         self.irq_sink.set_level(false);
+        self.queue_msix_vectors.fill(VIRTIO_MSI_NO_VECTOR);
+        self.config_msix_vector = VIRTIO_MSI_NO_VECTOR;
+        self.msix_pending.fill(false);
+    }
+
+    /// Read from the MSI-X table at BAR0-relative `rel`.
+    fn msix_table_read(&self, rel: u64, data: &mut [u8]) {
+        let idx = (rel / MSIX_ENTRY_SIZE) as usize;
+        let field = rel % MSIX_ENTRY_SIZE;
+        let dword = self.msix_table.get(idx).map_or(0, |e| match field {
+            0 => e.address as u32,
+            4 => (e.address >> 32) as u32,
+            8 => e.data,
+            12 => e.control,
+            _ => 0,
+        });
+        put_le(data, u64::from(dword));
+    }
+
+    /// Write to the MSI-X table at BAR0-relative `rel`. Clearing a vector's mask
+    /// bit delivers any interrupt that arrived while it was masked.
+    fn msix_table_write(&mut self, rel: u64, data: &[u8]) {
+        let idx = (rel / MSIX_ENTRY_SIZE) as usize;
+        let field = rel % MSIX_ENTRY_SIZE;
+        let value = get_le(data) as u32;
+        if let Some(e) = self.msix_table.get_mut(idx) {
+            match field {
+                0 => e.address = (e.address & 0xffff_ffff_0000_0000) | u64::from(value),
+                4 => e.address = (e.address & 0x0000_0000_ffff_ffff) | (u64::from(value) << 32),
+                8 => e.data = value,
+                12 => e.control = value,
+                _ => {}
+            }
+        }
+        if field == 12 {
+            self.deliver_pending();
+        }
+    }
+
+    /// Read the MSI-X pending-bit array at BAR0-relative `rel` (8-byte qwords).
+    fn msix_pba_read(&self, rel: u64, data: &mut [u8]) {
+        let base = (rel / 8) * 64;
+        let mut qword = 0u64;
+        for (idx, &pending) in self.msix_pending.iter().enumerate() {
+            let bit = idx as u64;
+            if pending && bit >= base && bit < base + 64 {
+                qword |= 1 << (bit - base);
+            }
+        }
+        put_le(data, qword);
     }
 
     /// Handle a read of BAR0 at `offset`.
@@ -263,8 +423,19 @@ impl VirtioPciDevice {
             o if (DEVICE_CFG_OFFSET..DEVICE_CFG_OFFSET + DEVICE_CFG_LEN).contains(&o) => {
                 self.device.read_config(o - DEVICE_CFG_OFFSET, data);
             }
+            o if (MSIX_TABLE_OFFSET..MSIX_TABLE_OFFSET + self.msix_table_len()).contains(&o) => {
+                self.msix_table_read(o - MSIX_TABLE_OFFSET, data);
+            }
+            o if (MSIX_PBA_OFFSET..MSIX_PBA_OFFSET + 8).contains(&o) => {
+                self.msix_pba_read(o - MSIX_PBA_OFFSET, data);
+            }
             _ => data.fill(0),
         }
+    }
+
+    /// Length in bytes of the MSI-X table region in BAR0.
+    const fn msix_table_len(&self) -> u64 {
+        self.msix_table.len() as u64 * MSIX_ENTRY_SIZE
     }
 
     /// Handle a write to BAR0 at `offset`.
@@ -277,14 +448,17 @@ impl VirtioPciDevice {
                     let mem = Arc::clone(&self.mem);
                     let queue = &mut self.queues[queue_idx];
                     if self.device.on_notify(queue_idx, queue, &mem) {
-                        self.trigger_interrupt();
+                        self.raise_queue_interrupt(queue_idx);
                     }
                 }
             }
             o if (DEVICE_CFG_OFFSET..DEVICE_CFG_OFFSET + DEVICE_CFG_LEN).contains(&o) => {
                 self.device.write_config(o - DEVICE_CFG_OFFSET, data);
             }
-            // ISR is read-only; anything else is ignored.
+            o if (MSIX_TABLE_OFFSET..MSIX_TABLE_OFFSET + self.msix_table_len()).contains(&o) => {
+                self.msix_table_write(o - MSIX_TABLE_OFFSET, data);
+            }
+            // ISR and the PBA are read-only; anything else is ignored.
             _ => {}
         }
     }
@@ -307,8 +481,15 @@ impl VirtioPciDevice {
                 1 => self.driver_features >> 32,
                 _ => 0,
             },
-            // msix_config (0x10) and queue_msix_vector (0x1a): MSI-X unsupported.
-            0x10 | 0x1a => VIRTIO_MSI_NO_VECTOR,
+            // msix_config (0x10): the configuration-change MSI-X vector.
+            0x10 => u64::from(self.config_msix_vector),
+            // queue_msix_vector (0x1a): the selected queue's MSI-X vector.
+            0x1a => u64::from(
+                self.queue_msix_vectors
+                    .get(self.queue_select as usize)
+                    .copied()
+                    .unwrap_or(VIRTIO_MSI_NO_VECTOR),
+            ),
             0x12 => self.queues.len() as u64,
             0x14 => u64::from(self.status),
             0x16 => u64::from(self.queue_select),
@@ -394,8 +575,13 @@ impl VirtioPciDevice {
                     q.used_ring = (q.used_ring & 0x0000_0000_ffff_ffff) | (value << 32);
                 }
             }
-            // msix_config (0x10), queue_msix_vector (0x1a) and read-only fields
-            // are ignored.
+            0x10 => self.config_msix_vector = value as u16,
+            0x1a => {
+                if let Some(v) = self.queue_msix_vectors.get_mut(sel) {
+                    *v = value as u16;
+                }
+            }
+            // Read-only fields are ignored.
             _ => {}
         }
     }
@@ -413,12 +599,22 @@ impl PciDevice for VirtioPciDevice {
                 // command (0x04-0x05), BAR0 (0x10-0x13) and interrupt line (0x3c)
                 // are writable; everything else is read-only.
                 0x04 | 0x05 | 0x10..=0x13 | 0x3c => self.config.set_u8(off, byte),
+                // MSI-X message control high byte: only the function-mask
+                // (bit 14) and enable (bit 15) bits are writable; the low bits
+                // (table size) are read-only.
+                o if o == CAP_MSIX + 3 => {
+                    let preserved = self.config.get_u8(o) & 0x3f;
+                    self.config.set_u8(o, (byte & 0xc0) | preserved);
+                }
                 _ => {}
             }
         }
         // Re-impose BAR0 type/size encoding: 32-bit, non-prefetchable, 4 KiB.
         let bar = self.config.get_u32(0x10) & 0xffff_f000;
         self.config.set_u32(0x10, bar);
+        // Enabling MSI-X or clearing the function mask may release interrupts
+        // that were pending while masked.
+        self.deliver_pending();
     }
 }
 
@@ -506,9 +702,20 @@ mod tests {
         }
     }
 
+    struct TestMsiSink;
+    impl MsiSink for TestMsiSink {
+        fn signal(&self, _address: u64, _data: u32) {}
+    }
+
     fn device() -> VirtioPciDevice {
         let mem = Arc::new(GuestMemory::allocate(0x1000).expect("alloc"));
-        VirtioPciDevice::new(mem, Arc::new(NullIrqSink), Box::new(DummyDevice), 12)
+        VirtioPciDevice::new(
+            mem,
+            Arc::new(NullIrqSink),
+            Arc::new(TestMsiSink),
+            Box::new(DummyDevice),
+            12,
+        )
     }
 
     fn cfg_u8(d: &VirtioPciDevice, off: u64) -> u8 {
@@ -540,13 +747,11 @@ mod tests {
     }
 
     #[test]
-    fn capability_chain_is_well_formed() {
+    fn virtio_capabilities_are_well_formed() {
         let d = device();
         // First cap is the common-cfg structure inside BAR0.
         assert_eq!(cfg_u8(&d, CAP_COMMON as u64), PCI_CAP_ID_VNDR);
         assert_eq!(cfg_u8(&d, CAP_COMMON as u64 + 3), VIRTIO_PCI_CAP_COMMON_CFG);
-        // The chain ends at the device-cfg cap.
-        assert_eq!(cfg_u8(&d, CAP_DEVICE as u64 + 1), 0x00);
         assert_eq!(cfg_u8(&d, CAP_DEVICE as u64 + 3), VIRTIO_PCI_CAP_DEVICE_CFG);
     }
 

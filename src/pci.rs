@@ -51,6 +51,11 @@ impl ConfigSpace {
         self.regs[offset + 3] = (value >> 24) as u8;
     }
 
+    /// Load a byte from `offset`.
+    pub const fn get_u8(&self, offset: usize) -> u8 {
+        self.regs[offset]
+    }
+
     /// Load a little-endian 16-bit value from `offset`.
     pub const fn get_u16(&self, offset: usize) -> u16 {
         (self.regs[offset] as u16) | ((self.regs[offset + 1] as u16) << 8)
