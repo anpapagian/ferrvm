@@ -63,6 +63,10 @@ impl Vm for KvmVm<'_> {
     fn register_irq(&self, irq: u32) -> traits::Result<Arc<dyn traits::IrqSink>> {
         Ok(Arc::new(irq::KvmIrqSink::new(self.fd.as_raw_fd(), irq)))
     }
+
+    fn msi_sink(&self) -> traits::Result<Arc<dyn traits::MsiSink>> {
+        Ok(Arc::new(irq::KvmMsiSink::new(self.fd.as_raw_fd())))
+    }
 }
 
 impl From<&traits::Segment> for api::KvmSegment {

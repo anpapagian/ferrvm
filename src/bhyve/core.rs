@@ -288,6 +288,10 @@ impl Vm for BhyveVm<'_> {
     fn register_irq(&self, irq: u32) -> traits::Result<Arc<dyn traits::IrqSink>> {
         Ok(Arc::new(irq::BhyveIrqSink::new(self.fd, irq)))
     }
+
+    fn msi_sink(&self) -> traits::Result<Arc<dyn traits::MsiSink>> {
+        Ok(Arc::new(irq::BhyveMsiSink::new(self.fd)))
+    }
 }
 
 impl From<&traits::Segment> for SegDesc {

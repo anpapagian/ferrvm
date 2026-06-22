@@ -113,6 +113,14 @@ impl IrqSink for NullIrqSink {
     fn set_level(&self, _asserted: bool) {}
 }
 
+/// Abstracts delivery of a message-signaled interrupt (MSI/MSI-X). The address
+/// and data are the x86 MSI message the guest programmed into a device's table;
+/// the backend injects them so the in-kernel local APIC delivers the interrupt.
+/// Unlike [`IrqSink`] this is edge-triggered and carries no line state.
+pub trait MsiSink: Send + Sync {
+    fn signal(&self, address: u64, data: u32);
+}
+
 #[allow(clippy::struct_excessive_bools)]
 pub struct Serial {
     // Programmable registers

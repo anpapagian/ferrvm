@@ -7,6 +7,19 @@ pub struct KvmIrqLevel {
     pub level: u32,
 }
 
+/// Argument to `KVM_SIGNAL_MSI`: an MSI message to inject. `address` is split
+/// into lo/hi halves; `flags`/`devid` are unused (no device id routing).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct KvmMsi {
+    pub address_lo: u32,
+    pub address_hi: u32,
+    pub data: u32,
+    pub flags: u32,
+    pub devid: u32,
+    pub pad: [u8; 12],
+}
+
 /// KVM Segment Register (for GDT, LDT, TR, etc.)
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -420,6 +433,7 @@ pub const KVM_SET_TSS_ADDR: u64 = io(KVMIO, 0x47);
 pub const KVM_CREATE_IRQCHIP: u64 = io(KVMIO, 0x60);
 pub const KVM_CREATE_PIT2: u64 = iow::<KvmPitConfig>(KVMIO, 0x77);
 pub const KVM_IRQ_LINE: u64 = iow::<KvmIrqLevel>(KVMIO, 0x61);
+pub const KVM_SIGNAL_MSI: u64 = iow::<KvmMsi>(KVMIO, 0xa5);
 
 // vCPU ioctls (on vCPU fd)
 pub const KVM_RUN: u64 = io(KVMIO, 0x80);

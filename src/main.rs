@@ -211,11 +211,18 @@ fn main() -> Result<(), String> {
         )
         .map_err(|e| format!("Failed to register virtio-pci MMIO window: {e}"))?;
 
+    // One MSI-X injector shared by every virtio function; devices fall back to
+    // the per-device INTx line when the guest does not enable MSI-X.
+    let msi_sink = vm
+        .msi_sink()
+        .map_err(|e| format!("Failed to create MSI sink: {e}"))?;
+
     // Register Virtio PCI RNG device at slot 00:01.0 (INTx on GSI 12).
     let virtio_rng_gsi = 12;
     let virtio_rng_device = Arc::new(Mutex::new(crate::virtio::pci::VirtioPciDevice::new(
         guest_mem.clone(),
         Arc::new(crate::serial::NullIrqSink),
+        msi_sink.clone(),
         Box::new(crate::virtio::rng::VirtioRng::new()),
         virtio_rng_gsi as u8,
     )));
@@ -247,6 +254,7 @@ fn main() -> Result<(), String> {
         let virtio_blk_device = Arc::new(Mutex::new(crate::virtio::pci::VirtioPciDevice::new(
             guest_mem.clone(),
             Arc::new(crate::serial::NullIrqSink),
+            msi_sink.clone(),
             Box::new(blk),
             virtio_blk_gsi as u8,
         )));

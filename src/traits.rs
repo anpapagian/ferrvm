@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-pub use crate::serial::IrqSink;
+pub use crate::serial::{IrqSink, MsiSink};
 use crate::stats::ExitStats;
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -14,6 +14,11 @@ pub trait Vm {
     fn create_vcpu<'a>(&'a self, id: u32) -> Result<Box<dyn Vcpu + Send + 'a>>;
     fn register_memory_region(&self, gpa: u64, size: u64, hpa: u64) -> Result<()>;
     fn register_irq(&self, irq: u32) -> Result<Arc<dyn IrqSink>>;
+
+    /// A sink that injects message-signaled interrupts (MSI/MSI-X) for any
+    /// device. One instance can be shared across devices; the message address
+    /// and data are supplied per signal.
+    fn msi_sink(&self) -> Result<Arc<dyn MsiSink>>;
 }
 
 pub trait Vcpu {
