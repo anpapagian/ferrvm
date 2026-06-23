@@ -1,5 +1,7 @@
 # virtio-rng: The simplest virtio device
 
+> **Note:** This document reflects the state of the code at commit [de1d6ab0fe0a2f345c738398550b27c2209cb2c4](https://github.com/anpapagian/ferrvm/tree/de1d6ab0fe0a2f345c738398550b27c2209cb2c4). Since then the implementation has moved from `virtio-mmio` to `virtio-pci`, so the transport details described here no longer match the current master branch.
+
 [ferrvm](https://github.com/anpapagian/ferrvm/) has now support for a *virtio* device. The first one we added is **virtio-rng**, a source of random bytes. This document explains what virtio is, why we started with rng, and the full protocol: what the guest reads and writes, and how the VMM answers.
 
 ## What is virtio?
