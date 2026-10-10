@@ -1,0 +1,27 @@
+[package]
+name = "guest"
+version = "0.1.0"
+edition = "2024"
+authors = ["Anastasios Papagiannis <tasos.papagiannnis@gmail.com>"]
+description = "A simple guest kernel for ferrvm."
+license = "MIT OR Apache-2.0"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+use_self = "allow"
+struct_field_names = "allow"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
+[[bin]]
+name = "guest"
+test = false
+bench = false
