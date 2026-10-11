@@ -195,7 +195,7 @@ impl Vm for BhyveVm<'_> {
         Ok(())
     }
 
-    fn create_vcpu<'a>(&'a self, id: u32) -> traits::Result<Box<dyn Vcpu + Send + 'a>> {
+    fn create_vcpu<'a>(&'a self, id: u32) -> traits::Result<Box<dyn Vcpu + 'a>> {
         printcrln!("[bhyve] Creating vCPU {id}");
         let fd = self.fd.as_raw_fd();
 

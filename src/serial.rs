@@ -4,10 +4,9 @@
 //! FCR, LCR, MCR, LSR, MSR, SCR, plus DLAB-banked DLL/DLM.
 use std::collections::VecDeque;
 use std::io::Write;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::bus::BusDevice;
-use crate::traits::{self, Vm};
 
 // ---- Register offsets (DLAB=0 unless noted) --------------------------------
 const REG_RBR_THR_DLL: u64 = 0; // read: RBR, write: THR; DLAB=1: DLL
@@ -103,14 +102,6 @@ const fn trigger_bytes(code: u8) -> usize {
 /// Abstracts the mechanism that delivers a line-level interrupt to the guest.
 pub trait IrqSink: Send + Sync {
     fn set_level(&self, asserted: bool);
-}
-
-/// No-op sink used as default. Also useful in tests that don't care about
-/// interrupt timing.
-#[derive(Default)]
-pub struct NullIrqSink;
-impl IrqSink for NullIrqSink {
-    fn set_level(&self, _asserted: bool) {}
 }
 
 #[allow(clippy::struct_excessive_bools)]
@@ -226,16 +217,6 @@ impl Serial {
             self.update_irq();
         }
         changed
-    }
-
-    /// Replace the IRQ sink. Used during setup to swap from `NullIrqSink`
-    /// to an `EventFdIrqSink` once the irqfd is wired.
-    pub fn replace_irq_sink(&mut self, sink: Arc<dyn IrqSink>) {
-        // After a sink swap, our cached `last_irq_level` refers to the old
-        // sink's state. Force a re-evaluation against the new sink.
-        self.last_irq_level = false;
-        self.irq = sink;
-        self.update_irq();
     }
 
     const fn dlab(&self) -> bool {
@@ -479,15 +460,6 @@ impl BusDevice for Serial {
             _ => {}
         }
     }
-}
-
-pub fn register_serial(vm: &dyn Vm, irq: u32, serial: &Arc<Mutex<Serial>>) -> traits::Result<()> {
-    let sink = vm.register_irq(irq)?;
-    serial
-        .lock()
-        .expect("serial poisoned")
-        .replace_irq_sink(sink);
-    Ok(())
 }
 
 #[cfg(test)]

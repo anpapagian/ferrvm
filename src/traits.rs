@@ -11,7 +11,7 @@ pub trait Hypervisor {
 
 pub trait Vm {
     fn setup(&self) -> Result<()>;
-    fn create_vcpu<'a>(&'a self, id: u32) -> Result<Box<dyn Vcpu + Send + 'a>>;
+    fn create_vcpu<'a>(&'a self, id: u32) -> Result<Box<dyn Vcpu + 'a>>;
     fn register_memory_region(&self, gpa: u64, size: u64, hpa: u64) -> Result<()>;
     fn register_irq(&self, irq: u32) -> Result<Arc<dyn IrqSink>>;
 }
@@ -26,12 +26,31 @@ pub trait Vcpu {
         mmio_bus: &crate::bus::Bus,
         config: &crate::config::Config,
     ) -> core::result::Result<bool, std::io::Error>;
+    #[cfg(target_arch = "x86_64")]
     fn set_regs(&self, regs: &VcpuRegs) -> Result<()>;
+    #[cfg(target_arch = "x86_64")]
     fn get_regs(&self) -> Result<VcpuRegs>;
+    #[cfg(target_arch = "x86_64")]
     fn set_sregs(&self, sregs: &VcpuSregs) -> Result<()>;
+    #[cfg(target_arch = "x86_64")]
     fn get_sregs(&self) -> Result<VcpuSregs>;
+
+    #[cfg(target_arch = "aarch64")]
+    fn set_boot_state(&self, pc: u64, fdt_address: u64) -> Result<()>;
+
+    #[cfg(target_arch = "aarch64")]
+    fn arm64_state(&self) -> Result<Arm64State>;
 }
 
+#[cfg(target_arch = "aarch64")]
+#[derive(Debug, Default, Clone)]
+pub struct Arm64State {
+    pub x: [u64; 31],
+    pub pc: u64,
+    pub cpsr: u64,
+}
+
+#[cfg(target_arch = "x86_64")]
 #[derive(Debug, Default, Clone)]
 pub struct VcpuRegs {
     pub rax: u64,
@@ -55,6 +74,7 @@ pub struct VcpuRegs {
 }
 
 /// Segment Register (for GDT, LDT, TR, etc.)
+#[cfg(target_arch = "x86_64")]
 #[derive(Clone, Debug, Default)]
 pub struct Segment {
     pub base: u64,
@@ -74,6 +94,7 @@ pub struct Segment {
 }
 
 /// Descriptor Table Register (for GDT, IDT)
+#[cfg(target_arch = "x86_64")]
 #[derive(Clone, Debug, Default)]
 pub struct Dtable {
     pub base: u64,
@@ -82,6 +103,7 @@ pub struct Dtable {
     pub padding: [u16; 3],
 }
 
+#[cfg(target_arch = "x86_64")]
 #[derive(Debug, Default, Clone)]
 pub struct VcpuSregs {
     pub cs: Segment,

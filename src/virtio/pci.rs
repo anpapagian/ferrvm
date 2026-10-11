@@ -211,11 +211,6 @@ impl VirtioPciDevice {
         }
     }
 
-    /// Replace the active IRQ sink (used to swap in the real line at setup).
-    pub fn replace_irq_sink(&mut self, sink: Arc<dyn IrqSink>) {
-        self.irq_sink = sink;
-    }
-
     /// Current BAR0 base address as programmed by the guest (0 if unassigned).
     pub const fn bar_base(&self) -> u64 {
         (self.config.get_u32(0x10) & 0xffff_f000) as u64
@@ -487,7 +482,10 @@ impl BusDevice for VirtioPciMmio {
 mod tests {
     use super::*;
     use crate::memory::GuestMemory;
-    use crate::serial::NullIrqSink;
+    struct NullIrqSink;
+    impl IrqSink for NullIrqSink {
+        fn set_level(&self, _: bool) {}
+    }
 
     /// Minimal backend: one queue, always asks for a used-ring interrupt.
     struct DummyDevice;

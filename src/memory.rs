@@ -7,10 +7,17 @@ pub struct GuestMemory {
     ptr: NonNull<u8>,
     /// Size of the memory region in bytes
     size: usize,
+    /// Guest physical address corresponding to the first byte in `ptr`.
+    base: u64,
 }
 
 impl GuestMemory {
+    #[cfg(test)]
     pub fn allocate(size: usize) -> Result<Self, String> {
+        Self::allocate_at(0, size)
+    }
+
+    pub fn allocate_at(base: u64, size: usize) -> Result<Self, String> {
         if size == 0 {
             return Err("Memory size must be > 0".to_string());
         }
@@ -49,11 +56,18 @@ impl GuestMemory {
         Ok(Self {
             ptr,
             size: aligned_size,
+            base,
         })
     }
 
     fn checked_hva(&self, gpa: u64, len: usize, op: &str) -> Result<*mut u8, String> {
-        let start = usize::try_from(gpa)
+        let offset = gpa.checked_sub(self.base).ok_or_else(|| {
+            format!(
+                "{op} at 0x{gpa:X} is below guest memory base 0x{:X}",
+                self.base
+            )
+        })?;
+        let start = usize::try_from(offset)
             .map_err(|_| format!("{op} at 0x{gpa:X} cannot be represented on this host"))?;
         let end = start.checked_add(len).ok_or_else(|| {
             format!("{op} at 0x{gpa:X} (len {len}) overflows guest address space")
@@ -106,6 +120,7 @@ impl GuestMemory {
         Ok(())
     }
 
+    #[cfg(any(target_arch = "x86_64", test))]
     pub unsafe fn write_obj<T: Sized>(&self, gpa: u64, obj: &T) -> Result<(), String> {
         // SAFETY: obj is a valid T, so its bytes are readable for size_of::<T>().
         let bytes = unsafe {
@@ -123,6 +138,10 @@ impl GuestMemory {
 
     pub const fn size(&self) -> u64 {
         self.size as u64
+    }
+
+    pub const fn base(&self) -> u64 {
+        self.base
     }
 }
 
@@ -220,5 +239,14 @@ mod tests {
         assert!(mem.zero_at(4000, usize::MAX - 4000 + 1).is_err());
         // Huge GPA
         assert!(mem.read_at(u64::MAX, 1).is_err());
+    }
+
+    #[test]
+    fn test_nonzero_guest_base() {
+        let mem = GuestMemory::allocate_at(0x4000_0000, 4096).unwrap();
+        mem.write_at(0x4000_0100, b"arm64").unwrap();
+        assert_eq!(mem.read_at(0x4000_0100, 5).unwrap(), b"arm64");
+        assert!(mem.read_at(0x100, 1).is_err());
+        assert_eq!(mem.base(), 0x4000_0000);
     }
 }

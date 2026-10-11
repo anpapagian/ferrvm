@@ -48,7 +48,7 @@ impl Vm for KvmVm<'_> {
         Ok(())
     }
 
-    fn create_vcpu<'a>(&'a self, id: u32) -> traits::Result<Box<dyn Vcpu + Send + 'a>> {
+    fn create_vcpu<'a>(&'a self, id: u32) -> traits::Result<Box<dyn Vcpu + 'a>> {
         let vcpu = self
             .create_vcpu(id)
             .map_err(|e| format!("Failed to create vCPU: {e}"))?;

@@ -1,6 +1,6 @@
 # ferrvm
 
-**ferrvm** is a minimal Virtual Machine Monitor (VMM) written in Rust. It has two backends: the Linux KVM API and the illumos bhyve API. The backend is selected automatically at compile time based on the target OS.
+**ferrvm** is a minimal Virtual Machine Monitor (VMM) written in Rust. It has backends for the Linux KVM API, the illumos bhyve API, and Apple's Hypervisor.framework. The backend is selected automatically at compile time based on the target OS and architecture.
 
 [![CI](https://github.com/anpapagian/ferrvm/actions/workflows/rust.yml/badge.svg)](https://github.com/anpapagian/ferrvm/actions/workflows/rust.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
@@ -8,16 +8,16 @@
 
 ## Design
 
-**ferrvm** interacts with each hypervisor exclusively through raw `ioctl` calls and hand-written `#[repr(C)]` structs — no wrapper crates (`kvm-bindings`, `kvm-ioctls`). This is intentional: the goal is to stay as close to the KVM (and bhyve) API as possible, making the implementation a direct expression of the kernel interface.
+**ferrvm** interacts with each hypervisor through raw system interfaces and hand-written `#[repr(C)]` structs — no hypervisor wrapper crates. This is intentional: the goal is to stay close to KVM, bhyve, and Hypervisor.framework, making each backend a direct expression of its host interface.
 
 ## Requirements
 
-- Linux x86_64 with KVM support enabled, or illumos x86_64 with bhyve support enabled
+- Linux x86_64 with KVM, illumos x86_64 with bhyve, or Apple silicon with macOS 15 or newer
 - Rust toolchain (stable)
 
 ## Example
 
-ferrvm can boot either an uncompressed ELF kernel (`vmlinux`) or a compressed bzImage (`vmlinuz`).
+On x86_64, ferrvm can boot either an uncompressed ELF kernel (`vmlinux`) or a compressed bzImage (`vmlinuz`).
 
 ### Option 1: Boot a bzImage directly
 
@@ -44,6 +44,16 @@ A helper script to build a minimal BusyBox-based initramfs is provided at
 [`contrib/build-initramfs.sh`](contrib/build-initramfs.sh). It produces
 an `initramfs.cpio.gz` suitable for passing via `--initramfs`.
 
+On an Apple silicon Mac, use the Alpine-based helper instead. It downloads an
+AArch64 minirootfs, verifies it, and packages it without requiring a Linux
+cross-compiler:
+
+```sh
+./contrib/build-initramfs-macos.sh
+cargo run -- --kernel ./vmlinuz \
+  --initramfs ./ferrvm-initramfs-build/initramfs-aarch64.cpio.gz
+```
+
 ### Option 2: Boot an uncompressed ELF kernel
 
 Extract a `vmlinux` from the bzImage:
@@ -68,6 +78,27 @@ Expected output: early kernel boot messages over the emulated serial port. Witho
 an initramfs, the boot terminates at a kernel panic (no rootfs). With an initramfs
 supplied via `--initramfs`, the guest proceeds to user space and drops into an
 interactive shell on the emulated serial console.
+
+### Apple silicon
+
+Download the AArch64 Fedora kernel by changing the architecture in the Fedora URL:
+
+```sh
+FEDORA_RELEASE=44
+curl -LO "https://download.fedoraproject.org/pub/fedora/linux/releases/${FEDORA_RELEASE}/Everything/aarch64/os/images/pxeboot/vmlinuz"
+```
+
+Then boot it with the same command:
+
+```sh
+cargo run -- --kernel ./vmlinuz
+```
+
+Fedora's AArch64 `vmlinuz` is an EFI ZBOOT wrapper. ferrvm decompresses its zstd
+payload, loads the ARM64 Linux Image and a generated device tree, and starts the
+guest at EL1. The Cargo runner ad-hoc signs the binary with Apple's hypervisor
+entitlement before launch. Supplying only a kernel eventually panics because no
+root filesystem exists; use `--initramfs` or `--disk` for a complete guest.
 
 ### Example runs
 
@@ -109,9 +140,9 @@ A qemu-style Ctrl-A prefix is reserved for VMM control:
 
 ## Virtio
 
-ferrvm exposes virtio devices over the virtio-pci (virtio 1.0, modern) transport.
-A minimal PCI host bridge (Intel 440FX) sits at slot 00:00.0, and each virtio
-device appears as a PCI function behind it:
+ferrvm exposes virtio devices using virtio 1.0. x86_64 uses the modern virtio-pci
+transport behind a minimal Intel 440FX host bridge; ARM64 uses virtio-mmio nodes
+described in its generated device tree.
 
 - **virtio-rng** — an entropy source for the guest.
 - **virtio-blk** — a block device backed by a raw disk image on the host.
@@ -130,11 +161,6 @@ cargo run -- --kernel ./vmlinuz --initramfs ./initramfs.cpio.gz --disk ./disk.im
 The image is exposed to the guest as a virtio-blk device (typically `/dev/vda`).
 It is a raw image (no qcow2/format layer); its size determines the reported
 capacity, and writes go straight through to the host file.
-
-The device negotiates the `VIRTIO_F_VERSION_1`, `VIRTIO_BLK_F_FLUSH`, and
-`VIRTIO_BLK_F_SEG_MAX` features, and supports read, write, flush, and get-id
-(`VIRTIO_BLK_T_IN` / `VIRTIO_BLK_T_OUT` / `VIRTIO_BLK_T_FLUSH` / `VIRTIO_BLK_T_GET_ID`) 
-requests.
 
 ## License
 

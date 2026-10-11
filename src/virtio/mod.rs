@@ -1,7 +1,16 @@
 pub mod blk;
+#[cfg(target_arch = "aarch64")]
+pub mod mmio;
+#[cfg(target_arch = "x86_64")]
 pub mod pci;
 pub mod rng;
 
+#[cfg(target_arch = "aarch64")]
+pub const VIRTIO_MAGIC: u32 = 0x7472_6976;
+#[cfg(target_arch = "aarch64")]
+pub const VIRTIO_VERSION: u32 = 2;
+#[cfg(target_arch = "aarch64")]
+pub const VIRTIO_VENDOR: u32 = 0x554d_4551;
 pub const VIRTIO_F_VERSION_1: u64 = 1 << 32;
 
 pub const VIRTQ_DESC_F_NEXT: u16 = 1;

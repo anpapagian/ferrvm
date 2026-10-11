@@ -3,6 +3,7 @@ use crate::config::Config;
 use crate::input::Shutdown;
 use crate::memory;
 use crate::stats::ExitStats;
+#[cfg(target_arch = "x86_64")]
 use crate::traits::Segment;
 use crate::traits::Vcpu;
 
@@ -49,6 +50,7 @@ pub fn run_vcpu(
     Ok(stats)
 }
 
+#[cfg(target_arch = "x86_64")]
 fn dump_segment(name: &str, seg: &Segment) {
     printcrln!(
         "{}: sel=0x{:04X} base=0x{:016X} limit=0x{:08X} type={} p={} dpl={} db={} s={} l={} g={} unusable={}",
@@ -67,6 +69,7 @@ fn dump_segment(name: &str, seg: &Segment) {
     );
 }
 
+#[cfg(target_arch = "x86_64")]
 pub fn dump_state(vcpu: &dyn Vcpu) -> Result<(), String> {
     let regs = vcpu
         .get_regs()
@@ -125,3 +128,26 @@ pub fn dump_state(vcpu: &dyn Vcpu) -> Result<(), String> {
 
     Ok(())
 }
+
+#[cfg(target_arch = "aarch64")]
+pub fn dump_state(vcpu: &dyn Vcpu) -> Result<(), String> {
+    let state = vcpu
+        .arm64_state()
+        .map_err(|e| format!("Failed to get ARM64 registers: {e}"))?;
+    printcrln!("\n[debug] ========== vCPU State Dump ==========");
+    for row in 0..8 {
+        let first = row * 4;
+        let mut line = String::from("[debug]  ");
+        for index in first..usize::min(first + 4, state.x.len()) {
+            write!(&mut line, " X{index:02}=0x{:016X}", state.x[index])
+                .expect("writing to a String cannot fail");
+        }
+        printcrln!("{line}");
+    }
+    printcrln!("[debug]   PC=0x{:016X}", state.pc);
+    printcrln!("[debug] CPSR=0x{:016X}", state.cpsr);
+    printcrln!("[debug] ========================================\n");
+    Ok(())
+}
+#[cfg(target_arch = "aarch64")]
+use std::fmt::Write as _;

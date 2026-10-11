@@ -1,11 +1,32 @@
 //! Stdin reader thread
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use crate::serial::Serial;
 use crate::terminal::{EscapeAction, EscapeState};
+
+/// A handled signal interrupts the hypervisor run call so it can observe shutdown.
+const extern "C" fn sigusr1_noop(_: libc::c_int) {}
+
+pub fn install_vcpu_kick_handler() -> Result<(), String> {
+    // SAFETY: An all-zero sigaction is a valid starting state.
+    let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+    action.sa_sigaction = sigusr1_noop as *const () as usize;
+    // Leave SA_RESTART clear so the run call can return on interruption.
+    action.sa_flags = 0;
+    // SAFETY: action owns valid sigset storage.
+    unsafe { libc::sigemptyset(&raw mut action.sa_mask) };
+    // SAFETY: action remains alive for the call; no old action is requested.
+    if unsafe { libc::sigaction(libc::SIGUSR1, &raw const action, std::ptr::null_mut()) } != 0 {
+        return Err(format!(
+            "Failed to install SIGUSR1 handler: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Clone, Default)]
 pub struct Shutdown {
@@ -15,7 +36,7 @@ pub struct Shutdown {
 #[derive(Default)]
 struct ShutdownInner {
     flag: AtomicBool,
-    kick_thread: AtomicU64,
+    kick_thread: AtomicUsize,
 }
 
 impl Shutdown {
@@ -27,10 +48,10 @@ impl Shutdown {
     /// Intended for the vCPU thread so the signal EINTRs out of `KVM_RUN`
     /// and lets the loop observe the flag.
     pub fn set_kick_target(&self, thread: libc::pthread_t) {
-        #[allow(clippy::useless_conversion)]
-        self.inner
-            .kick_thread
-            .store(thread.into(), Ordering::SeqCst);
+        // pthread_t is usize on macOS, but u64 on Linux and illumos.
+        #[allow(clippy::unnecessary_cast)]
+        let thread = thread as usize;
+        self.inner.kick_thread.store(thread, Ordering::SeqCst);
     }
 
     /// Mark shutdown requested.

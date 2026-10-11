@@ -3,6 +3,7 @@
 /vmlinuz
 /extract-vmlinux
 /initramfs.cpio.gz
+/initrd.img
 /ferrvm-initramfs-build
 /local
 /.DS_Store
