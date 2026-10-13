@@ -6,10 +6,6 @@
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-## Design
-
-**ferrvm** interacts with each hypervisor exclusively through raw `ioctl` calls and hand-written `#[repr(C)]` structs — no wrapper crates (`kvm-bindings`, `kvm-ioctls`). This is intentional: the goal is to stay as close to the KVM (and bhyve) API as possible, making the implementation a direct expression of the kernel interface.
-
 ## Requirements
 
 - Linux x86_64 with KVM support enabled, or illumos x86_64 with bhyve support enabled
@@ -69,13 +65,6 @@ an initramfs, the boot terminates at a kernel panic (no rootfs). With an initram
 supplied via `--initramfs`, the guest proceeds to user space and drops into an
 interactive shell on the emulated serial console.
 
-### Example runs
-
-Example runs for both KVM and bhyve backends can be found in the following gists:
-
-- [bhyve (illumos)](https://gist.github.com/tpapagian/1807ced816dd90e1c10d3e535d38bfcf#file-bhyve-run-md)
-- [KVM (Linux)](https://gist.github.com/tpapagian/1807ced816dd90e1c10d3e535d38bfcf#file-kvm-run-md)
-
 ### Options
 
 | Flag           | Description                                        | Default  |
@@ -130,23 +119,3 @@ cargo run -- --kernel ./vmlinuz --initramfs ./initramfs.cpio.gz --disk ./disk.im
 The image is exposed to the guest as a virtio-blk device (typically `/dev/vda`).
 It is a raw image (no qcow2/format layer); its size determines the reported
 capacity, and writes go straight through to the host file.
-
-The device negotiates the `VIRTIO_F_VERSION_1`, `VIRTIO_BLK_F_FLUSH`, and
-`VIRTIO_BLK_F_SEG_MAX` features, and supports read, write, flush, and get-id
-(`VIRTIO_BLK_T_IN` / `VIRTIO_BLK_T_OUT` / `VIRTIO_BLK_T_FLUSH` / `VIRTIO_BLK_T_GET_ID`) 
-requests.
-
-## License
-
-Licensed under either of:
-
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <https://www.apache.org/licenses/LICENSE-2.0>)
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or <https://opensource.org/licenses/MIT>)
-
-at your option.
-
-### Contribution
-
-Unless you explicitly state otherwise, any contribution intentionally submitted
-for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
-dual-licensed as above, without any additional terms or conditions.
