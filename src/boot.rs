@@ -35,7 +35,7 @@ const LINUX_HEAP_END_PTR: u16 = 0xFE00;
 const SETUP_HEADER_OFFSET: usize = 0x1F1;
 const INITRAMFS_ADDR: u64 = 0x800_0000; // 128 MB
 
-fn is_elf64(data: &[u8]) -> bool {
+const fn is_elf64(data: &[u8]) -> bool {
     data.len() >= 5
         && data[0] == 0x7F
         && data[1] == b'E'
