@@ -75,6 +75,7 @@ interactive shell on the emulated serial console.
 | `--cmdline`    | Kernel command line                                | built-in |
 | `--disk`       | Path to a raw disk image to attach as virtio-blk   | none     |
 | `--debug`      | Enable debug mode                                  | off      |
+| `--cpus`       | Number of CPUs to use                              | 1        |
 
 Run `cargo run -- --help` for the full list.
 
