@@ -102,6 +102,17 @@ macro_rules! println {
     ($($arg:tt)*) => (print!("{}\n", format_args!($($arg)*)));
 }
 
+#[inline]
+fn get_cpl() -> u16 {
+    let cs: u16;
+
+    unsafe {
+        asm!("mov {cs:x}, cs", cs = out(reg) cs);
+    }
+
+    cs & 0x3
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
     serial_init();
@@ -110,6 +121,7 @@ pub extern "C" fn _start() -> ! {
 
     println!("Hello World from the guest!");
     println!("val = {}", val);
+    println!("Running in Ring {}", get_cpl());
 
     #[allow(clippy::empty_loop)]
     loop {
