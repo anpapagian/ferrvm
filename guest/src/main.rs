@@ -117,10 +117,7 @@ fn get_cpl() -> u16 {
 pub extern "C" fn _start() -> ! {
     serial_init();
 
-    let val: u32 = 11;
-
     println!("Hello World from the guest!");
-    println!("val = {}", val);
     println!("Running in Ring {}", get_cpl());
 
     #[allow(clippy::empty_loop)]
