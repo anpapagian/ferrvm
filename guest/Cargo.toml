@@ -27,6 +27,8 @@ test = false
 bench = false
 
 [dependencies]
+spin = "0.12.3"
+uart_16550 = "0.9.0"
 x86_64 = "0.15.5"
 
 [dependencies.lazy_static]
