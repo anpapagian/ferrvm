@@ -25,3 +25,10 @@ panic = "abort"
 name = "guest"
 test = false
 bench = false
+
+[dependencies]
+x86_64 = "0.15.5"
+
+[dependencies.lazy_static]
+version = "1.5.1"
+features = ["spin_no_std"]
