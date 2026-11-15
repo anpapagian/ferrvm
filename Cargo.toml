@@ -13,6 +13,7 @@ undocumented_unsafe_blocks = "warn"
 cast_possible_truncation = "allow"
 cast_possible_wrap = "allow"
 cast_sign_loss = "allow"
+used_underscore_items = "allow"
 use_self = "allow"
 struct_field_names = "allow"
 
