@@ -1,9 +1,13 @@
 #![no_std]
 #![no_main]
+#![feature(abi_x86_interrupt)]
 
 use core::arch::asm;
 use core::fmt::{self, Write};
 use core::panic::PanicInfo;
+
+use lazy_static::lazy_static;
+use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
 const COM1_BASE: u16 = 0x3f8;
 
@@ -113,12 +117,34 @@ fn get_cpl() -> u16 {
     cs & 0x3
 }
 
+lazy_static! {
+    static ref IDT: InterruptDescriptorTable = {
+        let mut idt = InterruptDescriptorTable::new();
+        idt.breakpoint.set_handler_fn(breakpoint_handler);
+        idt
+    };
+}
+
+pub fn init_idt() {
+    IDT.load();
+}
+
+extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
+    println!("EXCEPTION: BREAKPOINT\n{:#?}", stack_frame);
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
     serial_init();
+    init_idt();
 
     println!("Hello World from the guest!");
     println!("Running in Ring {}", get_cpl());
+
+    // breakpoint exception
+    x86_64::instructions::interrupts::int3();
+
+    println!("Before the empty loop.");
 
     #[allow(clippy::empty_loop)]
     loop {
